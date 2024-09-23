@@ -243,8 +243,8 @@ def find_iy_feed_index(case, feed_loc):
     
     return iy_feed_index
 
-def write_forces_to_case(forces, case, time_step):
-    body_force_file_path = os.path.join(case, time_step, "wallshear")
+def write_forces_to_case(velocities, forces, case, time_step):
+    body_force_file_path = os.path.join(case, time_step, "U")
     os.makedirs(os.path.dirname(body_force_file_path), exist_ok=True)
     
     with open(body_force_file_path, 'w') as f:
@@ -254,26 +254,112 @@ def write_forces_to_case(forces, case, time_step):
         f.write('    format      ascii;\n')
         f.write('    class       volVectorField;\n')
         f.write('    location    "{}";\n'.format(time_step))
-        f.write('    object      wallshear;\n')
+        f.write('    object      U;\n')
         f.write('}\n')
-        f.write('dimensions      [0 1 -2 0 0 0 0];\n')
+        f.write('dimensions      [0 1 -1 0 0 0 0];\n')
         f.write('internalField   nonuniform List<vector>\n')
-        f.write('{}\n'.format(len(forces)))
+        f.write('{}\n'.format(len(velocities)))
         f.write('(\n')
 
+        for velocity in velocities:
+            f.write('({} {} {})\n'.format(velocity[0], velocity[1], velocity[2]))
+        f.write(')\n')
+        f.write(';\n')
+        f.write('boundaryField\n')
+        f.write('{\n')
+        f.write('    bottom\n')
+        f.write('    {\n')
+        f.write('        type            fixedGradient;\n') 
+        f.write('        gradient        nonuniform List<vector>\n') 
+        f.write('        {}\n'.format(len(forces)))
+        f.write('        (\n')
+
         for force in forces:
-            f.write('({} {} {})\n'.format(force[0], force[1], force[2]))
+            f.write('           ({} {} {})\n'.format(force[0], force[1], force[2]))
 
+        f.write('        );\n')
+        f.write('    }\n')
+        f.write('    top\n')
+        f.write('    {\n')
+        f.write('        type            noSlip;\n')
+        f.write('    }\n')
+        f.write('    left\n')
+        f.write('    {\n')
+        f.write('        type            cyclic;\n')
+        f.write('    }\n')
+        f.write('    right\n')
+        f.write('    {\n')
+        f.write('        type            cyclic;\n')
+        f.write('    }\n')
+        f.write('    inlet\n')
+        f.write('    {\n')
+        f.write('        type            cyclic;\n')
+        f.write('    }\n')
+        f.write('    outlet\n')
+        f.write('    {\n')
+        f.write('        type            cyclic;\n')
+        f.write('    }\n')
+        f.write('}\n')
 
-def main(case_dir, num_steps, save_steps, feed_loc, input_loc, feed_steps):
+def write_only_velocity_to_case(velocities, case_dir, current_time):
+    body_force_file_path = os.path.join(case_dir, current_time, "U")
+    os.makedirs(os.path.dirname(body_force_file_path), exist_ok=True)
+    
+    with open(body_force_file_path, 'w') as f:
+        f.write('FoamFile\n')
+        f.write('{\n')
+        f.write('    version     2.0;\n')
+        f.write('    format      ascii;\n')
+        f.write('    class       volVectorField;\n')
+        f.write('    location    "{}";\n'.format(current_time))
+        f.write('    object      U;\n')
+        f.write('}\n')
+        f.write('dimensions      [0 1 -1 0 0 0 0];\n')
+        f.write('internalField   nonuniform List<vector>\n')
+        f.write('{}\n'.format(len(velocities)))
+        f.write('(\n')
+
+        for velocity in velocities:
+            f.write('({} {} {})\n'.format(velocity[0], velocity[1], velocity[2]))
+        f.write(')\n')
+        f.write(';\n')
+        f.write('boundaryField\n')
+        f.write('{\n')
+        f.write('    bottom\n')
+        f.write('    {\n')
+        f.write('        type            noSlip;\n')
+        f.write('    }\n')
+        f.write('    top\n')
+        f.write('    {\n')
+        f.write('        type            noSlip;\n')
+        f.write('    }\n')
+        f.write('    left\n')
+        f.write('    {\n')
+        f.write('        type            cyclic;\n')
+        f.write('    }\n')
+        f.write('    right\n')
+        f.write('    {\n')
+        f.write('        type            cyclic;\n')
+        f.write('    }\n')
+        f.write('    inlet\n')
+        f.write('    {\n')
+        f.write('        type            cyclic;\n')
+        f.write('    }\n')
+        f.write('    outlet\n')
+        f.write('    {\n')
+        f.write('        type            cyclic;\n')
+        f.write('    }\n')
+        f.write('}\n')
+
+def main(nu, case_dir, num_steps, save_steps, feed_loc, input_loc, feed_steps, first_hight_coarse, zero_hight_coarse, limit_steps, time_step_coarse, a_posteriori_steps):
     case = SolutionDirectory(case_dir)
     locations, iy_feed = get_locations(case_dir, feed_loc)
     locations_input, iy_input = get_locations(case_dir, input_loc)
     iy_feed_index = find_iy_feed_index(case_dir, feed_loc)
     iy_input_index = find_iy_feed_index(case_dir, input_loc)
 
-    current_time = case.getLast()
-    start_step = int(float(current_time) / 0.0008) 
+    current_time = case.getLast() 
+    start_step = int(float(current_time) / time_step_coarse) 
 
     for _ in range(start_step, start_step + num_steps):
         logging.debug(f'Step {_} start')
@@ -294,10 +380,6 @@ def main(case_dir, num_steps, save_steps, feed_loc, input_loc, feed_steps):
         
         logging.debug(f'U array populated at step {_}')               
 
-        print(iy_input_index)
-        print(iy_input)
-        print(iy_feed_index)
-        print(iy_feed)
         U_input = U[:, iy_input_index, :, :]
         #if _ % feed_steps == 0:
         INPUT_DB = np.zeros((32, 32, 3))
@@ -305,8 +387,8 @@ def main(case_dir, num_steps, save_steps, feed_loc, input_loc, feed_steps):
         #INPUT_DB[:, :, :] = U_input
 
         if _ != 0: 
-            if _ >= 1000:
-                if _ % feed_steps == 0:
+            if _ >= limit_steps:
+                if _ % a_posteriori_steps == 0:
                     # モデルのインスタンス化
                     generator = build_cnn_generator()
                     discriminator = load_discriminator()
@@ -331,38 +413,60 @@ def main(case_dir, num_steps, save_steps, feed_loc, input_loc, feed_steps):
                     time_coarse_start = 0
                     time_coarse_finish = 0
                     previous_steps = 0
-                    time_coarse_start = (_ + previous_steps - feed_steps) * 0.0008
-                    time_coarse_finish = (_ + previous_steps) * 0.0008    
+                    time_coarse_start_loop = (_ + previous_steps - a_posteriori_steps) * time_step_coarse
+                    time_coarse_finish_loop = (_ + previous_steps) * time_step_coarse  
+                    time_coarse_start = (_ + previous_steps - feed_steps) * time_step_coarse
+                    time_coarse_finish = (_ + previous_steps) * time_step_coarse 
                     case_coarse = "LES_co"  # Coarse simulation case directory
                     input_data_directory = "data/data-coarse" 
                     real_data_directory = "data/data-fine"  # Fine data directory where binary files are saved
-                    time_steps_coarse = np.arange(time_coarse_start, time_coarse_finish, 0.0008)  # Time steps for coarse data
-                    time_steps_fine = np.arange(4.0, 8.008, 0.008)    # Time steps for fine data
+                    time_steps_coarse = np.arange(time_coarse_start, time_coarse_finish, time_step_coarse)  # Time steps for coarse data
+                    time_steps_coarse_loop = np.arange(time_coarse_start_loop, time_coarse_finish_loop, time_step_coarse)  # Time steps for coarse data
+                    time_steps_fine = np.arange(4.0, 8.008, 0.008)  
                     time_per_step = 0.008
 
-                    epochs = 20
+                    epochs = 10
                     batch_size = 8
                     d_losses = []
                     d_accuracies = []
                     g_losses = []
                     #Prepare input data for generator
-                    delete_bin_files(input_data_directory)
-                    for time_step in time_steps_coarse:
-                        time_step_str_coarse = f"{time_step:.4f}"  # Convert time step to string
-                        
-                        # Get velocity data for the coarse case
-                        velocities_coarse = get_velocities(case_coarse, time_step_str_coarse)
-                        # Prepare coarse velocity fields
-                        u_data_coarse_input, w_data_coarse_input = prepare_velocity_field_coarse(velocities_coarse)
-                        # Combine u and w wall shear stress data
-                        data_combined = [u_data_coarse_input, w_data_coarse_input]
-                        batch_real_input_data = np.stack(data_combined, axis=-1)
-                        # Create filename for this time step
-                        output_filename = f"U-{time_step_str_coarse}.bin"
-                        output_filepath = os.path.join(input_data_directory, output_filename)
-                        # Save the combined data (u and w wall shear stress) as binary file
-                        batch_real_input_data.tofile(output_filepath)
-                        print(f"Data saved to {output_filepath}")
+                    if _ == limit_steps:
+                        """
+                        delete_bin_files(input_data_directory)
+                        print("create the coarse input data", feed_steps)
+                        for time_step in time_steps_coarse:
+                            time_step_str_coarse = f"{time_step:.4f}"  # Convert time step to string
+                            # Get velocity data for the coarse case
+                            velocities_coarse = get_velocities(case_coarse, time_step_str_coarse)
+                            # Prepare coarse velocity fields
+                            u_data_coarse_input, w_data_coarse_input = prepare_velocity_field_coarse(velocities_coarse)
+                            # Combine u and w wall shear stress data
+                            data_combined = [u_data_coarse_input, w_data_coarse_input]
+                            batch_real_input_data = np.stack(data_combined, axis=-1)
+                            # Create filename for this time step
+                            output_filename = f"U-{time_step_str_coarse}.bin"
+                            output_filepath = os.path.join(input_data_directory, output_filename)
+                            # Save the combined data (u and w wall shear stress) as binary file
+                            batch_real_input_data.tofile(output_filepath)
+                            print(f"Data saved to {output_filepath}")
+                        """
+                    else:
+                        for time_step in time_steps_coarse_loop:
+                            time_step_str_coarse_loop = f"{time_step:.4f}"  # Convert time step to string
+                            # Get velocity data for the coarse case
+                            velocities_coarse = get_velocities(case_coarse, time_step_str_coarse_loop)
+                            # Prepare coarse velocity fields
+                            u_data_coarse_input, w_data_coarse_input = prepare_velocity_field_coarse(velocities_coarse)
+                            # Combine u and w wall shear stress data
+                            data_combined = [u_data_coarse_input, w_data_coarse_input]
+                            batch_real_input_data = np.stack(data_combined, axis=-1)
+                            # Create filename for this time step
+                            output_filename = f"U-{time_step_str_coarse_loop}.bin"
+                            output_filepath = os.path.join(input_data_directory, output_filename)
+                            # Save the combined data (u and w wall shear stress) as binary file
+                            batch_real_input_data.tofile(output_filepath)
+                            print(f"Data saved to {output_filepath}")
 
                     for epoch in range(epochs):
                         print(f'Epoch {epoch + 1}/{epochs}')
@@ -502,13 +606,13 @@ def main(case_dir, num_steps, save_steps, feed_loc, input_loc, feed_steps):
                     generated_images = generator.predict(batch_input_data)  # Shape: (batch_size, 32, 32, 2)
                     generated_data = generated_images.squeeze()
 
-                    OUTPUT_DB[:, :, 0] = generated_data[:,:,0]
-                    OUTPUT_DB[:, :, 1] = generated_data[:,:,1]
+                    OUTPUT_DB[:, :, 0] = generated_data[:,:,0] / nu
+                    OUTPUT_DB[:, :, 1] = generated_data[:,:,1] / nu
 
                 # 4. Caluculate Shear Stress
                 if not _ % feed_steps == 0:
                     generator = tf.keras.models.load_model('generator.h5')
-                    case = _ * 0.0008 
+                    case = _ * time_step_coarse 
                     case_coarse = "LES_co" 
                     batch_input_data_list = []
                     time_step_str_coarse = f"{case:.4f}"   # Convert time step to string
@@ -530,29 +634,33 @@ def main(case_dir, num_steps, save_steps, feed_loc, input_loc, feed_steps):
                     generated_images = generator.predict(batch_input_data)  # Shape: (batch_size, 32, 32, 2)
                     generated_data = generated_images.squeeze()
 
-                    OUTPUT_DB[:, :, 0] = generated_data[:,:,0]
-                    OUTPUT_DB[:, :, 1] = generated_data[:,:,1]
+                    OUTPUT_DB[:, :, 0] = generated_data[:,:,0] / nu
+                    OUTPUT_DB[:, :, 1] = generated_data[:,:,1] / nu
                     print('use the generator and update the wall shear stress at', case)
             else:
                 for iz in range(32):
                     for ix in range(32):
-                        OUTPUT_DB[ix, iz, 0]  = nu * U[ix, 1, iz, 0] / first_hight_coarse
-                        OUTPUT_DB[ix, iz, 1]  = nu * U[ix, 1, iz, 2] / first_hight_coarse
-
+                        OUTPUT_DB[ix, iz, 0]  =  U[ix, 0, iz, 0] / zero_hight_coarse
+                        OUTPUT_DB[ix, iz, 1]  =  U[ix, 0, iz, 2] / zero_hight_coarse
 
         logging.debug(f'Output DB updated at step {_}')
 
         U_0 = []
+        U_1 = [] 
         i = 0
         for iz in range(32):
             for ix in range(32):
                 U_0.append((OUTPUT_DB[ix, iz, 0], 0.0, OUTPUT_DB[ix, iz, 1]))
+                U_1.append((OUTPUT_DB[ix, iz, 0], 0.0, OUTPUT_DB[ix, iz, 1]))
                 i += 1
-        logging.debug(f'U_1 array populated at step {_}')        
-
-        write_forces_to_case(U_0, case_dir, current_time)
-        logging.debug(f'Forces written to case at step {_}')
-    
+        logging.debug(f'U_1 array populated at step {_}')   
+        if _ >= limit_steps:
+            if _ % a_posteriori_steps == 0:
+                write_forces_to_case(velocities, U_0, case_dir, current_time)
+                logging.debug(f'Forces written to case at step {_} for time {current_time}')
+            else:
+                write_only_velocity_to_case(velocities,  case_dir, current_time)
+                logging.debug(f'Only velocities written to case at step {_} for time {current_time}') 
         runner = BasicRunner(argv=["pimpleFoam", "-case", case_dir], silent=False)
         runner.start()
         logging.debug(f'Runner started at step {_}')
@@ -570,11 +678,15 @@ def main(case_dir, num_steps, save_steps, feed_loc, input_loc, feed_steps):
 
 if __name__ == "__main__":
     case_dir = "LES_co/"
-    num_steps = 10000
+    num_steps = 3000
     save_steps = 1
     feed_steps = 500
+    limit_steps = 1500
+    a_posteriori_steps = 5
+    time_step_coarse = 0.002
     nu= 0.009
+    zero_hight_coarse = 0.00756331
     first_hight_coarse = 0.0271056
     feed_loc = 1.0 / 150.0
     input_loc = 50 / 150.0
-    main(case_dir, num_steps, save_steps, feed_loc, input_loc, feed_steps)
+    main(nu, case_dir, num_steps, save_steps, feed_loc, input_loc, feed_steps, first_hight_coarse, zero_hight_coarse, limit_steps, time_step_coarse, a_posteriori_steps)
