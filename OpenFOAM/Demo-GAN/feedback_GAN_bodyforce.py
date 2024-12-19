@@ -1,5 +1,3 @@
-#! /work/takumie/virtual/bin/python
-
 import numpy as np
 import shutil
 import os
@@ -70,62 +68,62 @@ class PeriodicPadding2D(tf.keras.layers.Layer):
         return config
 
 # Generatorの構築
-def build_cnn_generator(input_shape=(32, 32, 8)):
+def build_cnn_generator(input_shape=(32, 32, 6)):
     model = models.Sequential(name="Generator")
     model.add(layers.Input(shape=input_shape))
 
-    # 周期パディングを追加
     model.add(PeriodicPadding2D(padding=(1, 1)))
+    model.add(layers.Conv2D(16, (3, 3), padding='valid'))
+    model.add(layers.ReLU())
 
-    # Conv2D + ReLU の順番でレイヤーを追加（パディングは 'valid' を使用）
+    model.add(PeriodicPadding2D(padding=(1, 1)))
     model.add(layers.Conv2D(32, (3, 3), padding='valid'))
     model.add(layers.ReLU())
 
-    # 再度、周期パディングと畳み込み
+    model.add(PeriodicPadding2D(padding=(1, 1)))
+    model.add(layers.Conv2D(32, (3, 3), padding='valid'))
+    model.add(layers.ReLU())
+
     model.add(PeriodicPadding2D(padding=(1, 1)))
     model.add(layers.Conv2D(64, (3, 3), padding='valid'))
     model.add(layers.ReLU())
 
-    # もう一度、周期パディングと畳み込み
     model.add(PeriodicPadding2D(padding=(1, 1)))
-    model.add(layers.Conv2D(128, (3, 3), padding='valid'))
+    model.add(layers.Conv2D(64, (3, 3), padding='valid'))
     model.add(layers.ReLU())
 
-    # 最終出力層
     model.add(PeriodicPadding2D(padding=(1, 1)))
     model.add(layers.Conv2D(2, (3, 3), padding='valid'))
 
     return model
 
-# Discriminatorのインポート
 def load_discriminator():
-    try:
-        model = tf.keras.models.load_model('discriminator.h5')
-        print("Discriminator model loaded from discriminator.h5")
-    except:
-        model = models.Sequential(name="Discriminator")
-        model.add(layers.Input(shape=(32, 32, 2)))
-        
-        # Conv2D + BatchNormalization + ReLU
-        model.add(tfa.layers.SpectralNormalization(layers.Conv2D(16, (3, 3), padding='same')))
-        #model.add(layers.BatchNormalization())  # バッチノーマライゼーションを追加
-        model.add(layers.ReLU())  # ReLUをここで適用
-        
-        model.add(tfa.layers.SpectralNormalization(layers.Conv2D(32, (3, 3), padding='same')))
-        #model.add(layers.BatchNormalization())  # バッチノーマライゼーションを追加
-        model.add(layers.ReLU())  # ReLUをここで適用
-        
-        #model.add(tfa.layers.SpectralNormalization(layers.Conv2D(64, (3, 3), padding='same')))
-        #model.add(layers.BatchNormalization())  # バッチノーマライゼーションを追加
-        #model.add(layers.ReLU())  # ReLUをここで適用
-        
-        model.add(layers.Flatten())
-        
-        model.add(layers.Dense(8, activation='relu'))
-        model.add(layers.Dense(1, activation='sigmoid'))
-        
-        print("Discriminator model created from scratch")
+    model = models.Sequential(name="Discriminator")
+    model.add(layers.Input(shape=(32, 32, 2)))
+
+    # 畳み込み + プーリング層
+    model.add(tfa.layers.SpectralNormalization(layers.Conv2D(16, (3, 3), padding='same')))
+    model.add(layers.ReLU())
+    model.add(layers.MaxPooling2D(pool_size=(2, 2)))  # 16x16x16 に次元削減
+
+    model.add(tfa.layers.SpectralNormalization(layers.Conv2D(32, (3, 3), padding='same')))
+    model.add(layers.ReLU())
+    model.add(layers.MaxPooling2D(pool_size=(2, 2)))  # 8x8x32 に次元削減
+
+    model.add(tfa.layers.SpectralNormalization(layers.Conv2D(64, (3, 3), padding='same')))
+    model.add(layers.ReLU())
+    model.add(layers.MaxPooling2D(pool_size=(2, 2)))  # 4x4x64 に次元削減
+
+    model.add(tfa.layers.SpectralNormalization(layers.Conv2D(64, (3, 3), padding='same')))
+    model.add(layers.ReLU())
+    model.add(layers.MaxPooling2D(pool_size=(2, 2)))  # 4x4x64 に次元削減
+
+    # Flatten + 全結合層
+    model.add(layers.Flatten())  # 次元削減後のデータを1次元に変換
+    model.add(layers.Dense(8, activation='relu'))  # 隠れ層
+    model.add(layers.Dense(1, activation='sigmoid'))  # 出力層
     
+    print("Discriminator model created from scratch")
     return model
 
 # 保存するための関数
@@ -205,127 +203,86 @@ def prepare_velocity_field_fine(velocities):
     return u_wallshear_fine, w_wallshear_fine
 
 # 速度場のデータを3次元配列に格納する関数
-def prepare_velocity_field_coarse(velocities):
-    nx, ny, nz = 32, 32, 32
-    half_ny = 16
+def prepare_velocity_field_coarse(velocities, nu, zero_hight_coarse):
+    nx, ny, nz = 32, 16, 32
+    half_ny = ny // 2
     u_data = []
+    v_data = []
     w_data = []
+    u_data_top = []
+    v_data_top = []
+    w_data_top = []
     selected_y_indices_bottom = [1,2,3,4]  # y方向のインデックス
-    selected_y_indices_top = [30,29,28,27]  # y方向のインデックス
+    selected_y_indices_top = [6,5,4,3]  # y方向のインデックス
     u_data_coarse_input_bottom = []
+    v_data_coarse_input_bottom = []
     w_data_coarse_input_bottom = []
     u_data_coarse_input_top = []
+    v_data_coarse_input_top = []
     w_data_coarse_input_top = []
+    u_wallshear_bottom = []
+    w_wallshear_bottom = []
+    u_wallshear_top = []
+    w_wallshear_top = []
 
     i = 0
 
     # 速度データをリストに格納
     for iz in range(nz):
-        for iy in range(0,16):
+        for iy in range(0,8):
             for ix in range(nx):
                 u_data.append(velocities[i][0])  # u (x方向速度)
+                v_data.append(velocities[i][1])  # v (y方向速度)
                 w_data.append(velocities[i][2])  # w (z方向速度)
                 i += 1
     i = nx * half_ny * nz 
     for iz in range(nz):
-        for iy in range(16,32):
+        for iy in range(8,16):
             for ix in range(nx):
-                u_data.append(velocities[i][0])  # u (x方向速度)
-                w_data.append(velocities[i][2])  # w (z方向速度)
+                u_data_top.append(velocities[i][0])  # u (x方向速度)
+                v_data_top.append(velocities[i][1])  # v (y方向速度)
+                w_data_top.append(velocities[i][2])  # w (z方向速度)
                 i += 1 
 
     # リストをnumpy配列に変換
-    u_data = np.array(u_data).reshape((nx, ny, nz))  # Shape: (32, 8, 32)
-    w_data = np.array(w_data).reshape((nx, ny, nz))  # Shape: (32, 8, 32)
+    u_data = np.array(u_data).reshape((nx, half_ny, nz))  # Shape: (32, 8, 32)
+    v_data = np.array(v_data).reshape((nx, half_ny, nz))  # Shape: (32, 8, 32)
+    w_data = np.array(w_data).reshape((nx, half_ny, nz))  # Shape: (32, 8, 32)
+    u_data_top = np.array(u_data_top).reshape((nx, half_ny, nz))  # Shape: (32, 8, 32)
+    v_data_top = np.array(v_data_top).reshape((nx, half_ny, nz))  # Shape: (32, 8, 32)
+    w_data_top = np.array(w_data_top).reshape((nx, half_ny, nz))  # Shape: (32, 8, 32)
 
     # 壁面近傍の四層のデータを抽出 (32, 32, 4)
     for iy in selected_y_indices_bottom:
         u_data_coarse_input_bottom.append(u_data[:, iy, :])  # Extract y-slice
+        v_data_coarse_input_bottom.append(v_data[:, iy, :])  # Extract y-slice
         w_data_coarse_input_bottom.append(w_data[:, iy, :])  # Extract y-slice
     
     # 壁面近傍の四層のデータを抽出 (32, 32, 4)
     for iy in selected_y_indices_top:
-        u_data_coarse_input_top.append(u_data[:, iy, :])  # Extract y-slice
-        w_data_coarse_input_top.append(w_data[:, iy, :])  # Extract y-slice
+        u_data_coarse_input_top.append(u_data_top[:, iy, :])  # Extract y-slice
+        v_data_coarse_input_top.append(v_data_top[:, iy, :])  # Extract y-slice
+        w_data_coarse_input_top.append(w_data_top[:, iy, :])  # Extract y-slice
 
     # Stack u and w data from selected y-slices to get shape (32, 32, 4)
     u_data_coarse_input_bottom = np.stack(u_data_coarse_input_bottom, axis=-1)  # Shape: (32, 32, 4)
+    v_data_coarse_input_bottom = np.stack(v_data_coarse_input_bottom, axis=-1)  # Shape: (32, 32, 4)
     w_data_coarse_input_bottom = np.stack(w_data_coarse_input_bottom, axis=-1)  # Shape: (32, 32, 4)
     u_data_coarse_input_top = np.stack(u_data_coarse_input_top, axis=-1)  # Shape: (32, 32, 4)
+    v_data_coarse_input_top = np.stack(v_data_coarse_input_top, axis=-1)  # Shape: (32, 32, 4)
     w_data_coarse_input_top = np.stack(w_data_coarse_input_top, axis=-1)  # Shape: (32, 32, 4) 
+    ave_u_o = np.mean(u_data_coarse_input_bottom[:, :, 0])
+    print('u_data_coarse_input_bottom', ave_u_o) 
 
-    return u_data_coarse_input_bottom, w_data_coarse_input_bottom, u_data_coarse_input_top, w_data_coarse_input_top
+    # 壁面剪断応力を計算
+    u_wallshear_bottom = (u_data[:, 0, :] / zero_hight_coarse * nu).reshape(32, 32, 1)  # Shape: (32, 32, 1)
+    w_wallshear_bottom = (w_data[:, 0, :] / zero_hight_coarse * nu).reshape(32, 32, 1)  # Shape: (32, 32, 1)
 
-def prepare_velocity_field_coarse_bottom(velocities):
-    nx, ny, nz = 32, 16, 32
-    half_ny = 8
-    u_data = []
-    w_data = []
+    u_wallshear_top = (u_data_top[:, 7, :] / zero_hight_coarse * nu).reshape(32, 32, 1)  # Shape: (32, 32, 1)
+    w_wallshear_top = (w_data_top[:, 7, :] / zero_hight_coarse * nu).reshape(32, 32, 1)  # Shape: (32, 32, 1)
 
-    selected_y_indices = [1,2,3,4]  # y方向のインデックス
-    u_data_coarse_input = []
-    w_data_coarse_input = []
+    return u_data_coarse_input_bottom, v_data_coarse_input_bottom, w_data_coarse_input_bottom, u_data_coarse_input_top,v_data_coarse_input_top, w_data_coarse_input_top,u_wallshear_bottom, w_wallshear_bottom, u_wallshear_top, w_wallshear_top 
 
-    i = 0
-
-    # 速度データをリストに格納
-    for iz in range(nz):
-        for iy in range(half_ny):
-            for ix in range(nx):
-                u_data.append(velocities[i][0])  # u (x方向速度)
-                w_data.append(velocities[i][2])  # w (z方向速度)
-                i += 1
-
-    # リストをnumpy配列に変換
-    u_data = np.array(u_data).reshape((nx, half_ny, nz))  # Shape: (32, 8, 32)
-    w_data = np.array(w_data).reshape((nx, half_ny, nz))  # Shape: (32, 8, 32)
-
-    # 壁面近傍の四層のデータを抽出 (32, 32, 4)
-    for iy in selected_y_indices:
-        u_data_coarse_input.append(u_data[:, iy, :])  # Extract y-slice
-        w_data_coarse_input.append(w_data[:, iy, :])  # Extract y-slice
-
-    # Stack u and w data from selected y-slices to get shape (32, 32, 4)
-    u_data_coarse_input = np.stack(u_data_coarse_input, axis=-1)  # Shape: (32, 32, 4)
-    w_data_coarse_input = np.stack(w_data_coarse_input, axis=-1)  # Shape: (32, 32, 4)
-
-    return u_data_coarse_input, w_data_coarse_input
-
-def prepare_velocity_field_coarse_top(velocities):
-    nx, ny, nz = 32, 16, 32
-    half_ny = 8
-    u_data = []
-    w_data = []
-
-    selected_y_indices = [7,6,5,4]  # y方向のインデックス
-    u_data_coarse_input = []
-    w_data_coarse_input = []
-
-    i = nx * half_ny * nz
-    print(i)
-
-    # 速度データをリストに格納
-    for iz in range(nz):
-        for iy in range(half_ny):
-            for ix in range(nx):
-                u_data.append(velocities[i][0])  # u (x方向速度)
-                w_data.append(velocities[i][2])  # w (z方向速度)
-                i += 1
-
-    # リストをnumpy配列に変換
-    u_data = np.array(u_data).reshape((nx, half_ny, nz))  # Shape: (32, 16, 32)
-    w_data = np.array(w_data).reshape((nx, half_ny, nz))  # Shape: (32, 16, 32)
-
-    # 壁面近傍の四層のデータを抽出 (32, 32, 4)
-    for iy in selected_y_indices:
-        u_data_coarse_input.append(u_data[:, iy, :])  # Extract y-slice
-        w_data_coarse_input.append(w_data[:, iy, :])  # Extract y-slice
-
-    # Stack u and w data from selected y-slices to get shape (32, 32, 4)
-    u_data_coarse_input = np.stack(u_data_coarse_input, axis=-1)  # Shape: (32, 32, 4)
-    w_data_coarse_input = np.stack(w_data_coarse_input, axis=-1)  # Shape: (32, 32, 4)
-
-    return u_data_coarse_input, w_data_coarse_input
 
 def get_velocities_normal(case, time_step):
     U_file_path = os.path.join(case, time_step, "U")
@@ -370,7 +327,7 @@ def find_iy_feed_index(case, feed_loc):
     # iy_feed のインデックスを取得
     iy_feed_index = y_loc.index(iy_feed)
     
-    return iy_feed_index
+    return y_loc,iy_feed_index
 
 def calculate_body_forces(current_time, velocities, locations, iy_feed, iy_feed_2, U_0, U_1, time_step_coarse, ny, delta):
     forces = []
@@ -447,37 +404,173 @@ def write_forces_to_case(forces, case, time_step):
         f.write('    }\n')
         f.write('}\n')
 
-def generator_output(case_coarse,time_step_str_coarse,alpha,beta,_,output_directory,U,case):
+def standardize_per_channel_global(data):
+    """
+    data: (N,H,W,C)
+    全サンプルについて各チャンネルで平均・stdを計算し、全サンプルを標準化
+    戻り値: standardized_data, means, stds
+    means, stdsは(チャンネル数,)で保持
+    """
+    N,H,W,C = data.shape
+    means = []
+    stds = []
+    for c in range(C):
+        channel_data = np.copy(data[:, :, :, c])
+        channel_data = data[:,:,:,c]
+        mean_c = np.mean(channel_data)
+        std_c = np.std(channel_data)
+        if std_c < 1e-8:
+            std_c = 1e-8
+        means.append(mean_c)
+        stds.append(std_c)
+        data[:,:,:,c] = (channel_data - mean_c) / std_c
+    means = np.array(means)
+    stds = np.array(stds)
+    return data, means, stds
+
+def standardize_per_channel_global_basedon_means_stds(data,means,stds):
+    """
+    data: (N,H,W,C)
+    全サンプルについて各チャンネルで平均・stdを計算し、全サンプルを標準化
+    戻り値: standardized_data, means, stds
+    means, stdsは(チャンネル数,)で保持
+    """
+    B,H,W,C = data.shape
+    for c in range(C):
+        data[:,:,:,c] = (data[:,:,:,c] - means[c]) / stds[c]
+    return data
+
+def inverse_standardize(data, means, stds, nu, zero_hight_coarse):
+    """
+    data: (H,W,C)
+    means, stds: (C,)
+    (data * std) + meanで元に戻す
+    """
+    #alpha = nu / zero_hight_coarse
+    #*nu/zero_hight_coarse
+    for c in range(data.shape[2]):
+        if c == 0:
+            data[:,:,c] = data[:,:,c] * (stds[0]) + (means[0])
+        else:
+            data[:,:,c] = data[:,:,c] * (stds[1]) + (means[1])
+    print('means:',means)
+    print('stds:',stds)
+    #print('alpha:',alpha)
+    return data
+
+def generator_output(case_coarse,time_step_str_coarse,alpha,beta,_,output_directory,U,case,ny,nu,zero_hight_coarse,time_steps_coarse, input_data_directory, coarse_original_data_directory,input_data_directory_top,coarse_original_data_directory_top):
     batch_input_data_list_bottom = []
     batch_input_data_list_top = []
     OUTPUT_DB = np.zeros((32, 32, 4)) 
-
     custom_objects = {'PeriodicPadding2D': PeriodicPadding2D}
     generator = load_model('generator.h5', custom_objects=custom_objects, compile=False)
-
-    # 必要なオプティマイザと損失関数を指定してモデルをコンパイル
-    generator.compile(optimizer='adam', loss='binary_crossentropy') 
-
+    # generator.compile(optimizer='adam', loss='binary_crossentropy') 
     # Get velocity data for the coarse case
+    print("time_step_str_coarse",time_step_str_coarse)
     velocities_coarse = get_velocities(case_coarse, time_step_str_coarse)
-    u_data_coarse_input_bottom, w_data_coarse_input_bottom, u_data_coarse_input_top, w_data_coarse_input_top = prepare_velocity_field_coarse(velocities_coarse)
-    
-    # Concatenate u and w data to form (32, 32, 8) input
-    batch_combined_data_bottom = np.concatenate((u_data_coarse_input_bottom, w_data_coarse_input_bottom), axis=-1)
-    batch_input_data_list_bottom.append(batch_combined_data_bottom)
-    # Convert lists to numpy arrays for batch processing
-    batch_input_data_bottom = np.array(batch_input_data_list_bottom)  # Shape: (batch_size, 32, 32, 8)
-    # 3. Generator Prediction
-    generated_images_bottom = generator.predict(batch_input_data_bottom)  # Shape: (batch_size, 32, 32, 2)
-    generated_data_bottom = generated_images_bottom.squeeze()
+    u_data_coarse_input_bottom, v_data_coarse_input_bottom, w_data_coarse_input_bottom, u_data_coarse_input_top,v_data_coarse_input_top, w_data_coarse_input_top,u_wallshear_bottom, w_wallshear_bottom, u_wallshear_top, w_wallshear_top  = prepare_velocity_field_coarse(velocities_coarse, nu, zero_hight_coarse)
+    # Combine u and w wall shear stress data
+    data_combined = [u_data_coarse_input_bottom, v_data_coarse_input_bottom, w_data_coarse_input_bottom]
+    batch_real_input_data = np.stack(data_combined, axis=-1)
+    # Create filename for this time step
+    output_filename = f"U-{time_step_str_coarse}.bin"
+    output_filepath = os.path.join(input_data_directory, output_filename)
+    # Save the combined data (u and w wall shear stress) as binary file
+    batch_real_input_data.tofile(output_filepath)
 
+    # Combine u and w wall shear stress data
+    data_combined = [u_data_coarse_input_bottom, v_data_coarse_input_bottom, w_data_coarse_input_bottom]
+    batch_real_input_data = np.stack(data_combined, axis=-1)
+    # Create filename for this time step
+    output_filename = f"U-{time_step_str_coarse}.bin"
+    output_filepath = os.path.join(input_data_directory_top, output_filename)
+    # Save the combined data (u and w wall shear stress) as binary file
+    batch_real_input_data.tofile(output_filepath)
+
+    # Combine u and w wall shear stress data
+    data_combined = [u_wallshear_bottom, w_wallshear_bottom]
+    batch_real_input_data = np.stack(data_combined, axis=-1)
+    # Create filename for this time step
+    output_filename = f"U-{time_step_str_coarse}.bin"
+    output_filepath = os.path.join(coarse_original_data_directory, output_filename)
+    # Save the combined data (u and w wall shear stress) as binary file
+    batch_real_input_data.tofile(output_filepath)
+
+    # Combine u and w wall shear stress data
+    data_combined = [u_wallshear_top, w_wallshear_top]
+    batch_real_input_data = np.stack(data_combined, axis=-1)
+    # Create filename for this time step
+    output_filename = f"U-{time_step_str_coarse}.bin"
+    output_filepath = os.path.join(coarse_original_data_directory_top, output_filename)
+    # Save the combined data (u and w wall shear stress) as binary file
+    batch_real_input_data.tofile(output_filepath)  
+
+    print(f"Data saved to {output_filepath}") 
+    ############################################################################# bottom ############################################################################################
+    #################### 1. prepare the data  ####################
+    # Combine u, v, and w data (input becomes 32, 32, 8)
+    batch_combined_data_bottom = np.concatenate((u_data_coarse_input_bottom, v_data_coarse_input_bottom, w_data_coarse_input_bottom), axis=-1)
+    batch_input_data_list_bottom.append(batch_combined_data_bottom)
+    # Select specific slices to reduce to 6 channels (example: first 6 combined channels)
+    
+    u_data_bottom = batch_combined_data_bottom[:, :, [0, 1, 4, 5, 8, 9]]  # 6 channels #######ここの取り方が違う
+    print('u_data_bottom_shape',u_data_bottom.shape)
+
+    #################### 2. save the data in the current time step ####################
+    # Convert to NumPy array with shape (batch_size, 32, 32, 6)
+    batch_input_data_bottom = np.array(u_data_bottom)  
+    # batch_input_data_bottom = np.expand_dims(batch_input_data_bottom, axis=0)  # (1, 32, 32, 6)
+    ave_0 = np.mean(batch_input_data_bottom[:, :, 0])
+    ave_1 = np.mean(batch_input_data_bottom[:, :, 1]) 
+    print('ave_0(流れ) before=',ave_0)
+    print('ave_1(流れ) before=',ave_1) 
+    """
+    # calculate the average value
+    batch_vel_input_data_bottom = np.stack(batch_combined_data_bottom, axis=-1)
+    # Create filename for this time step
+    output_filename = f"U-{time_step_str_coarse}.bin"
+    output_filepath = os.path.join(input_data_directory, output_filename)
+    # Save the combined data (u and w wall shear stress) as binary file
+    batch_vel_input_data_bottom.tofile(output_filepath) 
+    # wall shear 
+    data_combined = [u_wallshear_bottom, w_wallshear_bottom]
+    batch_wallshear_input_data = np.stack(data_combined, axis=-1)
+    output_filename = f"U-{time_step_str_coarse}.bin"
+    output_filepath = os.path.join(coarse_original_data_directory, output_filename)
+    # Save the combined data (u and w wall shear stress) as binary file
+    batch_wallshear_input_data.tofile(output_filepath) 
+    """
+
+    #################### 3. obatin average value and prepare the input data ####################
+    coarse_data, coarse_means, coarse_stds, coarse_wallshear_means, coarse_wallshear_stds = obtain_average(time_steps_coarse,input_data_directory,coarse_original_data_directory)
+    # print('time_steps_coarse',time_steps_coarse)
+    print('coarse_means',coarse_means)
+    print('coarse_stds',coarse_stds)
+    print('coarse_wallshear_means',coarse_wallshear_means)
+    print('coarse_wallshear_stds',coarse_wallshear_stds)
+
+    # 生成時も標準化
+    for c in range(6):
+        u_data_bottom[:,:,c] = (u_data_bottom[:,:,c]-coarse_means[c])/coarse_stds[c]
+    u_data_bottom = np.expand_dims(u_data_bottom, axis=0) 
+
+    #################### 4. generator prediction ####################
+    generated_images_bottom = generator.predict(u_data_bottom)  # Shape: (batch_size, 32, 32, 2)
+    generated = generated_images_bottom[0]
+    ave_0_original = np.mean(generated[:,:,0])  
+    ave_1_original = np.mean(generated[:,:,1])  
+    print('ave_0_original',ave_0_original)
+    print('ave_1_original',ave_1_original)
+    # generated_data_bottom_norm = generated_images_bottom.squeeze()
+    print('generated shape', generated.shape)
+    generated_data_bottom = inverse_standardize(generated, coarse_wallshear_means, coarse_wallshear_stds, nu, zero_hight_coarse)
     save_generated_bin_data(_, generated_data_bottom, output_directory, 1)
-    #
+
+    #################### 5. save data ####################
     # For the first layer (generated_data[:,:,0])
     ave_0 = np.mean(generated_data_bottom[:,:,0])  # Compute the mean of all points
     std_0 = np.std(generated_data_bottom[:,:,0])  # Compute the standard deviation of all points
-    print("ave_0 = ",ave_0)
-
+    print("ave_0_gen_wallshear = ",ave_0)
     # Create the ave and std arrays with the same shape as the grid (32x32)
     ave_0_grid = np.full((32, 32), ave_0)
     std_0_grid = np.full((32, 32), std_0)
@@ -487,74 +580,130 @@ def generator_output(case_coarse,time_step_str_coarse,alpha,beta,_,output_direct
     # Create the ave and std arrays with the same shape as the grid (32x32)
     ave_1_grid = np.full((32, 32), ave_1)
     std_1_grid = np.full((32, 32), std_1)
-    
     # Ensure the relationship is satisfied: generated_data = ave + std
     generated_data_bottom[:,:,0] = alpha * ave_0_grid + beta * (generated_data_bottom[:,:,0]-ave_0_grid) 
     generated_data_bottom[:,:,1] = alpha * ave_1_grid + beta * (generated_data_bottom[:,:,1]-ave_1_grid) 
-
-    # Save loss and accuracy data
-    with open('wallshear.txt', 'a') as f:  # 'a' モードで開くと加筆される
-        f.write(f"{_}, {ave_0}, {ave_1}\n")
-    
     ave_0_U = np.mean(U[:, 0, :, 0])
     ave_1_U = np.mean(U[:, 0, :, 2])
     ave_0_U_grid = np.full((32, 32), ave_0_U)
     ave_1_U_grid = np.full((32, 32), ave_1_U)
-
-    for iz in range(32):
-        for ix in range(32):
-            OUTPUT_DB[ix, iz, 0] = - ave_0_U_grid[ix, iz] + generated_data_bottom[ix, iz, 0] / nu * zero_hight_coarse
-            OUTPUT_DB[ix, iz, 1] = - ave_1_U_grid[ix, iz] + generated_data_bottom[ix, iz, 1] / nu * zero_hight_coarse 
-
+    OUTPUT_DB[:, :, 0] = - U[:, 0, :, 0] + generated_data_bottom[:,:,0] / nu * zero_hight_coarse
+    OUTPUT_DB[:, :, 1] = - U[:, 0, :, 2] + generated_data_bottom[:,:,1] / nu * zero_hight_coarse
     print('use the generator and update the wall shear stress at', case)
 
+    ############################################################################# top ############################################################################################
+    #################### 1. prepare the data  ####################
     # Concatenate u and w data to form (32, 32, 8) input
-    batch_combined_data_top = np.concatenate((u_data_coarse_input_top, w_data_coarse_input_top), axis=-1)
+    batch_combined_data_top = np.concatenate((u_data_coarse_input_top, v_data_coarse_input_top, w_data_coarse_input_top), axis=-1)
     batch_input_data_list_top.append(batch_combined_data_top)
-            
-    # Convert lists to numpy arrays for batch processing
-    batch_input_data_top = np.array(batch_input_data_list_top)  # Shape: (batch_size, 32, 32, 8)
+    # Select specific slices to reduce to 6 channels (example: first 6 combined channels)
+    u_data_top = batch_combined_data_top[:, :, [0, 1, 4, 5, 8, 9]]  # 6 channels
+    print('u_data_top_shape',u_data_top.shape)
+    # Convert to NumPy array with shape (batch_size, 32, 32, 6)
+    # batch_input_data_top = np.array(u_data)
 
-    # 3. Generator Prediction
-    generated_images_top = generator.predict(batch_input_data_top)  # Shape: (batch_size, 32, 32, 2)
-    generated_data_top = generated_images_top.squeeze()
-    
+    #################### 2. save the data in the current time step ####################
+    """
+    # calculate the average value
+    batch_vel_input_data_top = np.stack(batch_combined_data_top, axis=-1)
+    output_filename = f"U-{time_step_str_coarse}.bin"
+    output_filepath = os.path.join(input_data_directory_top, output_filename)
+    # Save the combined data (u and w wall shear stress) as binary file
+    batch_vel_input_data_bottom.tofile(output_filepath) 
+    # wall shear 
+    data_combined_top = [u_wallshear_top, w_wallshear_top]
+    batch_wallshear_input_data_top = np.stack(data_combined_top, axis=-1)
+    output_filename = f"U-{time_step_str_coarse}.bin"
+    output_filepath = os.path.join(coarse_original_data_directory_top, output_filename)
+    # Save the combined data (u and w wall shear stress) as binary file
+    batch_wallshear_input_data_top.tofile(output_filepath) 
+    """
+    #################### 3. obatin average value and prepare the input data ####################
+    coarse_data_top, coarse_means_top, coarse_stds_top, coarse_wallshear_means_top, coarse_wallshear_stds_top = obtain_average(time_steps_coarse,input_data_directory_top,coarse_original_data_directory_top)
+    print('coarse_means_top',coarse_means_top)
+    print('coarse_stds_top',coarse_stds_top)
+    print('coarse_wallshear_means_top',coarse_wallshear_means_top)
+    print('coarse_wallshear_stds_top',coarse_wallshear_stds_top)
+    # 生成時も標準化
+    for c in range(u_data_top.shape[2]):
+        u_data_top[:,:,c] = (u_data_top[:,:,c]-coarse_means_top[c])/coarse_stds_top[c]
+    ave_0_vel = np.mean(u_data_top[:, :, 0])
+    ave_1_vel = np.mean(u_data_top[:, :, 1]) 
+    print('ave_0(流れ)_top=',ave_0_vel)
+    print('ave_1(流れ)_top=',ave_1_vel)
+    u_data_top = np.expand_dims(u_data_top, axis=0)
+
+    #################### 4. generator prediction ####################
+    generated_images_top = generator.predict(u_data_top)  # Shape: (batch_size, 32, 32, 2)
+    generated = generated_images_top[0]
+    # generated_data_bottom_norm = generated_images_bottom.squeeze()
+    generated_data_top = inverse_standardize(generated, coarse_wallshear_means_top, coarse_wallshear_stds_top, nu, zero_hight_coarse)
+
+    #################### 5. save data ####################
     ave_0_top = np.mean(generated_data_top[:,:,0])  # Compute the mean of all points
     std_0 = np.std(generated_data_top[:,:,0])  # Compute the standard deviation of all points
     # Create the ave and std arrays with the same shape as the grid (32x32)
     ave_0_grid = np.full((32, 32), ave_0_top)
     std_0_grid = np.full((32, 32), std_0)
     # For the second layer (generated_data[:,:,1])
-    ave_1 = np.mean(generated_data_top[:,:,1])  # Compute the mean of all points
+    ave_1_top = np.mean(generated_data_top[:,:,1])  # Compute the mean of all points
     std_1 = np.std(generated_data_top[:,:,1])  # Compute the standard deviation of all points
     # Create the ave and std arrays with the same shape as the grid (32x32)
-    ave_1_grid = np.full((32, 32), ave_1)
+    ave_1_grid = np.full((32, 32), ave_1_top)
     std_1_grid = np.full((32, 32), std_1)
-    
     # Ensure the relationship is satisfied: generated_data = ave + std
-    generated_data_top[:,:,0] = alpha * ave_0_grid + beta * (generated_data_top[:,:,0]-ave_1_grid) 
+    generated_data_top[:,:,0] = alpha * ave_0_grid + beta * (generated_data_top[:,:,0]-ave_0_grid) 
     generated_data_top[:,:,1] = alpha * ave_1_grid + beta * (generated_data_top[:,:,1]-ave_1_grid) 
-
-    ave_0_U = np.mean(U[:, 0, :, 0])
-    ave_1_U = np.mean(U[:, 0, :, 2])
+    ave_0_U = np.mean(U[:, ny-1, :, 0])
+    ave_1_U = np.mean(U[:, ny-1, :, 2])
     ave_0_U_grid = np.full((32, 32), ave_0_U)
     ave_1_U_grid = np.full((32, 32), ave_1_U)
+    OUTPUT_DB[:, :, 2] = - U[:, ny-1, :, 0] + generated_data_top[:,:,0] / nu * zero_hight_coarse
+    OUTPUT_DB[:, :, 3] = - U[:, ny-1, :, 2] + generated_data_top[:,:,1] / nu * zero_hight_coarse
 
-    OUTPUT_DB[:, :, 2] = - ave_0_U_grid[:, :] + generated_data_top[:,:,0] / nu * zero_hight_coarse
-    OUTPUT_DB[:, :, 3] = - ave_1_U_grid[:, :] + generated_data_top[:,:,1] / nu * zero_hight_coarse
+    with open('wallshear.txt', 'a') as f:  # 'a' モードで開くと加筆される
+        f.write(f"{_}, {ave_0}, {ave_1}, {ave_0_top}, {ave_1_top}\n")
+    return OUTPUT_DB[:,:,:], ave_0, ave_1 
 
-    return OUTPUT_DB[:,:,:], ave_0 
+def obtain_average(time_steps_coarse,coarse_directory,wallshear_directory):
+    coarse_data_list = []
+    for t in time_steps_coarse:
+        t_str = f"{t:.4f}"
+        u_coarse_file = os.path.join(coarse_directory, f"U-{t_str}.bin")
+        u_data_full = np.fromfile(u_coarse_file, dtype=np.float64).reshape((32, 32, 12))
+        u_data = u_data_full[:, :, [0,3,1,4,2,5]]
+        coarse_data_list.append(u_data)
+    
+    coarse_wallshear_data_list = []
+    for t in time_steps_coarse:
+        t_str = f"{t:.4f}"
+        u_wallshear_coarse_file = os.path.join(wallshear_directory, f"U-{t_str}.bin")
+        wallshear_data = np.fromfile(u_wallshear_coarse_file, dtype=np.float64).reshape((32, 32, 2))
+        coarse_wallshear_data_list.append(wallshear_data)
+
+    coarse_data = np.array(coarse_data_list)  # (N,32,32,3)
+    coarse_wallshear_data = np.array(coarse_wallshear_data_list)      # (M,32,32,2)
+    num_samples = min(len(coarse_data), len(coarse_wallshear_data))
+    coarse_data = coarse_data[:num_samples]
+    coarse_wallshear_data = coarse_wallshear_data[:num_samples]
+
+    # チャネルごとにグローバルmean,stdで標準化
+    coarse_data, coarse_means, coarse_stds,  = standardize_per_channel_global(coarse_data)
+    coarse_wallshear_data, coarse_wallshear_means, coarse_wallshear_stds = standardize_per_channel_global(coarse_wallshear_data)
+
+    return coarse_data, coarse_means, coarse_stds, coarse_wallshear_means, coarse_wallshear_stds 
 
 def main(nu, case_dir, num_steps, save_steps, eed_loc, feed_loc_2, input_loc, feed_steps, first_hight_coarse, zero_hight_coarse, limit_steps, time_step_coarse, a_posteriori_steps, alpha, beta, delta, ny):
     case = SolutionDirectory(case_dir)
     locations, iy_feed = get_locations(case_dir, feed_loc)
     locations2, iy_feed_2 = get_locations(case_dir, feed_loc_2) 
     locations_input, iy_input = get_locations(case_dir, input_loc)
-    iy_feed_index = find_iy_feed_index(case_dir, feed_loc)
-    iy_input_index = find_iy_feed_index(case_dir, input_loc)
+    y_loc,iy_feed_index = find_iy_feed_index(case_dir, feed_loc)
+    y_loc,iy_input_index = find_iy_feed_index(case_dir, input_loc)
 
     current_time = case.getLast() 
     start_step = int(float(current_time) / time_step_coarse) 
+    print(y_loc)
 
     for _ in range(start_step, start_step + num_steps):
         logging.debug(f'Step {_} start')
@@ -563,10 +712,10 @@ def main(nu, case_dir, num_steps, save_steps, eed_loc, feed_loc_2, input_loc, fe
         velocities = get_velocities_normal(case_dir, current_time)
         logging.debug(f'Velocities obtained at step {_}')
 
-        U = np.zeros((32, 32, 32, 3))
+        U = np.zeros((32, 16, 32, 3))
         i = 0
         for iz in range(32):
-            for iy in range(0,16):
+            for iy in range(0,8):
                 for ix in range(32):
                     U[ix, iy, iz, 0] = velocities[i][0]
                     U[ix, iy, iz, 1] = velocities[i][1]
@@ -575,7 +724,7 @@ def main(nu, case_dir, num_steps, save_steps, eed_loc, feed_loc_2, input_loc, fe
         print(i)
 
         for iz in range(32):
-            for iy in range(16,32):
+            for iy in range(8,16):
                 for ix in range(32):
                     U[ix, iy, iz, 0] = velocities[i][0]
                     U[ix, iy, iz, 1] = velocities[i][1]
@@ -593,8 +742,26 @@ def main(nu, case_dir, num_steps, save_steps, eed_loc, feed_loc_2, input_loc, fe
         input_data_directory = "data/data-coarse" 
         real_data_directory = "data/data-fine"  # Fine data directory where binary files are saved
         output_directory = "data/data-wallshear-est"
+        coarse_original_data_directory = "data/data-coarse-wallshear"
+        input_data_directory_top = "data/data-coarse-top" 
+        output_directory_top = "data/data-wallshear-est-top"
+        coarse_original_data_directory_top = "data/data-coarse-wallshear-top"
 
-        if _ != 0: 
+        time_coarse_start = 0
+        time_coarse_finish = 0
+        previous_steps = 0
+        n = 100 # for choosing data from last 2 sec
+        time_coarse_start_loop = (_ + previous_steps - a_posteriori_steps) * time_step_coarse
+        time_coarse_finish_loop = (_ + previous_steps) * time_step_coarse 
+        time_coarse_start = (_ + previous_steps - feed_steps) * time_step_coarse 
+        time_coarse_finish = (_ + previous_steps) * time_step_coarse
+        feed_time= time_step_coarse  * n
+        time_steps_coarse = np.arange(time_coarse_start, time_coarse_finish, feed_time)  # Time steps for coarse data
+        time_steps_coarse_loop = np.arange(time_coarse_start_loop, time_coarse_finish_loop, feed_time)  # Time steps for coarse data
+        time_steps_fine = np.arange(4.0, 8.008, 0.008)  
+        time_per_step = 0.008
+
+        if _ >= 50000: 
             if 1000 <= _ <= limit_steps:
                 if _ % a_posteriori_steps == 0:
                     # モデルのインスタンス化
@@ -604,41 +771,29 @@ def main(nu, case_dir, num_steps, save_steps, eed_loc, feed_loc_2, input_loc, fe
                     discriminator.summary()
 
                     # Optimizers with adjusted learning rates
-                    generator_optimizer = optimizers.Adam(learning_rate=0.0001)
-                    discriminator_optimizer = optimizers.Adam(learning_rate=0.00002)
+                    generator_optimizer = optimizers.Adam(learning_rate=0.0004)
+                    discriminator_optimizer = optimizers.Adam(learning_rate=0.00001)
 
                     # Discriminatorのコンパイル
                     discriminator.compile(optimizer=discriminator_optimizer, loss='binary_crossentropy', metrics=['accuracy'])
 
                     # Generator + Discriminator（組み合わせモデル）
                     discriminator.trainable = False
-                    combined_input = layers.Input(shape=(32, 32, 8))
+                    combined_input = layers.Input(shape=(32, 32, 6))
                     generated_image = generator(combined_input)
                     discriminator_output = discriminator(generated_image)
                     combined_model = models.Model(combined_input, discriminator_output)
                     combined_model.compile(optimizer=generator_optimizer, loss='binary_crossentropy')
 
-                    time_coarse_start = 0
-                    time_coarse_finish = 0
-                    previous_steps = 0
-                    n = 2 # for choosing data from last 2 sec
-                    time_coarse_start_loop = (_ + previous_steps - a_posteriori_steps * 2) * time_step_coarse
-                    time_coarse_finish_loop = (_ + previous_steps) * time_step_coarse 
-                    time_coarse_start = (_ + previous_steps - feed_steps * 2) * time_step_coarse 
-                    time_coarse_finish = (_ + previous_steps) * time_step_coarse
-                    feed_time= time_step_coarse  * 2
-                    time_steps_coarse = np.arange(time_coarse_start, time_coarse_finish, feed_time)  # Time steps for coarse data
-                    time_steps_coarse_loop = np.arange(time_coarse_start_loop, time_coarse_finish_loop, feed_time)  # Time steps for coarse data
-                    time_steps_fine = np.arange(4.0, 8.008, 0.008)  
-                    time_per_step = 0.008
+                    delete_bin_files(duringtraining_directory)
 
-                    epochs = 1
+                    epochs = 100
                     batch_size = 8
                     d_losses = []
                     d_accuracies = []
                     g_losses = []
                     #Prepare input data for generator
-                    if _ == 11000:
+                    if _ == 50000:
                         """
                         delete_bin_files(input_data_directory)
                         print("create the coarse input data", feed_steps)
@@ -646,222 +801,249 @@ def main(nu, case_dir, num_steps, save_steps, eed_loc, feed_loc_2, input_loc, fe
                             time_step_str_coarse = f"{time_step:.4f}"  # Convert time step to string
                             # Get velocity data for the coarse case
                             velocities_coarse = get_velocities(case_coarse, time_step_str_coarse)
-                            # Prepare coarse velocity fields
-                            u_data_coarse_input, w_data_coarse_input, u_data_coarse_input_top, w_data_coarse_input_top = prepare_velocity_field_coarse(velocities_coarse)
+                            # Prepare coarse velocity fields ########NON DIMENTIONAL VELOCITY FIELDS########
+                            u_data_coarse_input_bottom, v_data_coarse_input_bottom, w_data_coarse_input_bottom, u_data_coarse_input_top,v_data_coarse_input_top, w_data_coarse_input_top,u_wallshear_bottom, w_wallshear_bottom, u_wallshear_top, w_wallshear_top  = prepare_velocity_field_coarse(velocities_coarse, nu, zero_hight_coarse)
+                            
                             # Combine u and w wall shear stress data
-                            data_combined = [u_data_coarse_input, w_data_coarse_input]
+                            data_combined = [u_data_coarse_input_bottom, v_data_coarse_input_bottom, w_data_coarse_input_bottom]
                             batch_real_input_data = np.stack(data_combined, axis=-1)
                             # Create filename for this time step
                             output_filename = f"U-{time_step_str_coarse}.bin"
                             output_filepath = os.path.join(input_data_directory, output_filename)
                             # Save the combined data (u and w wall shear stress) as binary file
                             batch_real_input_data.tofile(output_filepath)
+
+                            # Combine u and w wall shear stress data
+                            data_combined = [u_data_coarse_input_top,v_data_coarse_input_top, w_data_coarse_input_top]
+                            batch_real_input_data = np.stack(data_combined, axis=-1)
+                            # Create filename for this time step
+                            output_filename = f"U-{time_step_str_coarse}.bin"
+                            output_filepath = os.path.join(input_data_directory_top, output_filename)
+                            # Save the combined data (u and w wall shear stress) as binary file
+                            batch_real_input_data.tofile(output_filepath)
+
+                            # Combine u and w wall shear stress data
+                            data_combined = [u_wallshear_bottom, w_wallshear_bottom]
+                            batch_real_input_data = np.stack(data_combined, axis=-1)
+                            # Create filename for this time step
+                            output_filename = f"U-{time_step_str_coarse}.bin"
+                            output_filepath = os.path.join(coarse_original_data_directory, output_filename)
+                            # Save the combined data (u and w wall shear stress) as binary file
+                            batch_real_input_data.tofile(output_filepath)
+
+                            # Combine u and w wall shear stress data
+                            data_combined = [u_wallshear_top, w_wallshear_top]
+                            batch_real_input_data = np.stack(data_combined, axis=-1)
+                            # Create filename for this time step
+                            output_filename = f"U-{time_step_str_coarse}.bin"
+                            output_filepath = os.path.join(coarse_original_data_directory_top, output_filename)
+                            # Save the combined data (u and w wall shear stress) as binary file
+                            batch_real_input_data.tofile(output_filepath)  
+
                             print(f"Data saved to {output_filepath}")
                         """
-                        
                     else:
+                        
                         for time_step in time_steps_coarse_loop:
                             time_step_str_coarse_loop = f"{time_step:.4f}"  # Convert time step to string
                             # Get velocity data for the coarse case
                             velocities_coarse = get_velocities(case_coarse, time_step_str_coarse_loop)
-                            # Prepare coarse velocity fields
-                            u_data_coarse_input, w_data_coarse_input, u_data_coarse_input_top, w_data_coarse_input_top = prepare_velocity_field_coarse(velocities_coarse)
+                            # Prepare coarse velocity fields ########NON DIMENTIONAL VELOCITY FIELDS########
+                            u_data_coarse_input_bottom, v_data_coarse_input_bottom, w_data_coarse_input_bottom, u_data_coarse_input_top,v_data_coarse_input_top, w_data_coarse_input_top,u_wallshear_bottom, w_wallshear_bottom, u_wallshear_top, w_wallshear_top = prepare_velocity_field_coarse(velocities_coarse, nu, zero_hight_coarse)
                             # Combine u and w wall shear stress data
-                            data_combined = [u_data_coarse_input, w_data_coarse_input]
+                            data_combined = [u_data_coarse_input_bottom, v_data_coarse_input_bottom, w_data_coarse_input_bottom]
                             batch_real_input_data = np.stack(data_combined, axis=-1)
                             # Create filename for this time step
                             output_filename = f"U-{time_step_str_coarse_loop}.bin"
                             output_filepath = os.path.join(input_data_directory, output_filename)
                             # Save the combined data (u and w wall shear stress) as binary file
                             batch_real_input_data.tofile(output_filepath)
-                            print(f"Data saved to {output_filepath}")
 
-                    ave_0 = 0
-                    while not (1.7 < ave_0 < 2.0):
+                            # Combine u and w wall shear stress data
+                            data_combined = [u_data_coarse_input_bottom, v_data_coarse_input_bottom, w_data_coarse_input_bottom]
+                            batch_real_input_data = np.stack(data_combined, axis=-1)
+                            # Create filename for this time step
+                            output_filename = f"U-{time_step_str_coarse_loop}.bin"
+                            output_filepath = os.path.join(input_data_directory_top, output_filename)
+                            # Save the combined data (u and w wall shear stress) as binary file
+                            batch_real_input_data.tofile(output_filepath)
+
+                            # Combine u and w wall shear stress data
+                            data_combined = [u_wallshear_bottom, w_wallshear_bottom]
+                            batch_real_input_data = np.stack(data_combined, axis=-1)
+                            # Create filename for this time step
+                            output_filename = f"U-{time_step_str_coarse_loop}.bin"
+                            output_filepath = os.path.join(coarse_original_data_directory, output_filename)
+                            # Save the combined data (u and w wall shear stress) as binary file
+                            batch_real_input_data.tofile(output_filepath)
+
+                            # Combine u and w wall shear stress data
+                            data_combined = [u_wallshear_top, w_wallshear_top]
+                            batch_real_input_data = np.stack(data_combined, axis=-1)
+                            # Create filename for this time step
+                            output_filename = f"U-{time_step_str_coarse_loop}.bin"
+                            output_filepath = os.path.join(coarse_original_data_directory_top, output_filename)
+                            # Save the combined data (u and w wall shear stress) as binary file
+                            batch_real_input_data.tofile(output_filepath)  
+
+                            print(f"Data saved to {output_filepath}")
+                        
+                    ######## 標準化 ########    
+                    coarse_data_list = []
+                    for t in time_steps_coarse:
+                        t_str = f"{t:.4f}"
+                        u_coarse_file = os.path.join(input_data_directory, f"U-{t_str}.bin")
+                        u_data_full = np.fromfile(u_coarse_file, dtype=np.float64).reshape((32, 32, 12))
+                        # 必要なチャンネル抜粋 (例として0,3,7)
+                        u_data = u_data_full[:, :, [0,3,1,4,2,5]]
+                        coarse_data_list.append(u_data)
+
+                    fine_data_list = []
+                    for t in time_steps_fine:
+                        t_str = f"{t:.3f}"
+                        u_wallshear_fine_file = os.path.join(real_data_directory, f"wallshear-{t_str}.bin")
+                        wallshear_data = np.fromfile(u_wallshear_fine_file, dtype=np.float64).reshape((32, 32, 2))
+                        fine_data_list.append(wallshear_data)
+                     
+                    coarse_data = np.array(coarse_data_list)  # (N,32,32,3)
+                    fine_data = np.array(fine_data_list)      # (M,32,32,2)
+                    num_samples = min(len(coarse_data), len(fine_data))
+                    #coarse_data = coarse_data[:num_samples]
+                    #fine_data = fine_data[:num_samples]
+                    coarse_data, coarse_means, coarse_stds = standardize_per_channel_global(coarse_data)
+                    fine_data, fine_means, fine_stds = standardize_per_channel_global(fine_data)
+                    if _ == 50000:
+                        print('Now is ', _)
+                    else:
+                        ########################    
                         d_losses = []
                         d_accuracies = []
                         g_losses = []
-                        # モデルのインスタンス化
-                        generator = build_cnn_generator()
-                        discriminator = load_discriminator()
-                        generator.summary()
-                        discriminator.summary()
-                        # Optimizers with adjusted learning rates
-                        generator_optimizer = optimizers.Adam(learning_rate=0.0001)
-                        discriminator_optimizer = optimizers.Adam(learning_rate=0.00002)
-
-                        # Discriminatorのコンパイル
-                        discriminator.compile(optimizer=discriminator_optimizer, loss='binary_crossentropy', metrics=['accuracy'])
-
-                        # Generator + Discriminator（組み合わせモデル）
-                        discriminator.trainable = False
-                        combined_input = layers.Input(shape=(32, 32, 8))
-                        generated_image = generator(combined_input)
-                        discriminator_output = discriminator(generated_image)
-                        combined_model = models.Model(combined_input, discriminator_output)
-                        combined_model.compile(optimizer=generator_optimizer, loss='binary_crossentropy')
+                        ######## トレーニングループ ########
                         for epoch in range(epochs):
                             print(f'Epoch {epoch + 1}/{epochs}')
                             d_loss_list = []
                             d_accuracy_list = []
                             g_loss_list = []
 
-                            # Reset the batch input data list at each epoch
-                            batch_input_data_list = []
-                            batch_real_data_list = []
+                            permutation = np.random.permutation(num_samples)
+                            coarse_data_shuffled = coarse_data[permutation]
+                            fine_data_shuffled = fine_data[permutation]
 
-                            for batch_start_index in range(0, feed_steps, batch_size):
-                                upper_bound = min(batch_start_index + batch_size, feed_steps)
+                            for batch_start_index in range(0, num_samples, batch_size):
+                                upper_bound = min(batch_start_index + batch_size, num_samples)
+                                if upper_bound - batch_start_index < batch_size:
+                                    break
 
-                                # 1. Process coarse velocity data and prepare input for the generator
-                                batch_input_data_list = []  # Reset for each batch
-                                for time_step in time_steps_coarse[batch_start_index:upper_bound]:
-                                    time_step_str_coarse = f"{time_step:.4f}"  # Convert time step to string
+                                batch_coarse = coarse_data_shuffled[batch_start_index:upper_bound]
+                                batch_fine = fine_data_shuffled[batch_start_index:upper_bound]
 
-                                    # Get velocity data for the coarse case
-                                    u_coarse_file = os.path.join(input_data_directory, f"U-{time_step_str_coarse}.bin")
+                                # Generator Prediction
+                                generated_images = generator.predict(batch_coarse)  # (batch,32,32,2)
 
-                                    # Prepare coarse velocity fields
-                                    u_data = np.fromfile(u_coarse_file, dtype=np.float64).reshape((32, 32, 8))
+                                # Discriminator Training
+                                real_labels = np.ones((batch_size, 1))
+                                fake_labels = np.zeros((batch_size, 1))
 
-                                    batch_input_data_list.append(u_data)
-                                    print(time_step)
+                                d_loss_real = discriminator.train_on_batch(batch_fine, real_labels)
+                                d_loss_fake = discriminator.train_on_batch(generated_images, fake_labels)
+                                d_loss = 0.5 * (d_loss_real[0] + d_loss_fake[0])
+                                d_accuracy = 0.5 * (d_loss_real[1] + d_loss_fake[1])
 
-                                # Convert to numpy array
-                                batch_input_data = np.array(batch_input_data_list)  # Shape: (batch_size, 32, 32, 8)
+                                # Generator Training
+                                g_loss = combined_model.train_on_batch(batch_coarse, real_labels)
 
-                                # Check if this batch size is less than the expected batch size (only happens on the last batch)
-                                if batch_input_data.shape[0] != batch_size:
-                                    print(f"Warning: Last batch size is smaller: {batch_input_data.shape[0]} (expected {batch_size})")
-                                else:
-                                    assert batch_input_data.shape == (batch_size, 32, 32, 8), \
-                                        f"batch_input_data shape mismatch: {batch_input_data.shape}, expected (batch_size, 32, 32, 8)"
-
-                                # 2. Process fine wall shear stress data from pre-saved binary files
-                                batch_real_data_list = []  # Reset for each batch
-                                for time_step in time_steps_fine[batch_start_index:upper_bound]:
-                                    time_step_str_fine = f"{time_step:.3f}"  # Convert time step to string
-
-                                    # Load the pre-saved wall shear stress data for the fine case
-                                    u_wallshear_fine_file = os.path.join(real_data_directory, f"wallshear-{time_step_str_fine}.bin")
-
-                                    # Read binary data (32, 32, 2) as wall shear stress
-                                    wallshear_data = np.fromfile(u_wallshear_fine_file, dtype=np.float64).reshape((32, 32, 2))
-
-                                    # Append the fine data to the batch list
-                                    batch_real_data_list.append(wallshear_data)
-
-                                # Convert to numpy array
-                                batch_real_data = np.array(batch_real_data_list)  # Shape: (batch_size, 32, 32, 2)
-
-                                # 3. Generator Prediction
-                                generated_images = generator.predict(batch_input_data)  # Shape: (batch_size, 32, 32, 2)
-
-                                # Skip batch if it was smaller
-                                if batch_input_data.shape[0] != batch_size:
-                                    print(f"Skipping last batch with size: {batch_input_data.shape[0]}")
-                                    continue  # Skip this batch if it's smaller than the expected batch size
-                                    
-                                # Save generated data
-                                save_generated_bin_data(batch_start_index, generated_images, duringtraining_directory,time_per_step)
-
-                                # 4. Discriminator Training
-                                real_labels = np.ones((batch_size, 1))  # Real labels are 1
-                                fake_labels = np.zeros((batch_size, 1))  # Fake labels are 0
-                                
-                                # Discriminator Training with shuffled data
-                                # Combine real and generated data
-                                combined_data = np.concatenate((batch_real_data, generated_images), axis=0)  # Shape: (2*batch_size, 32, 32, 2)
-                                combined_labels = np.concatenate((real_labels, fake_labels), axis=0)  # Shape: (2*batch_size, 1)
-
-                                # Shuffle the combined data and labels
-                                shuffle_indices = np.random.permutation(combined_data.shape[0])
-                                shuffled_data = combined_data[shuffle_indices]
-                                shuffled_labels = combined_labels[shuffle_indices]
-
-                                # Train discriminator on shuffled data
-                                d_loss, d_accuracy = discriminator.train_on_batch(shuffled_data, shuffled_labels)
-
-                                # The rest of the training process remains the same
-                                g_loss = combined_model.train_on_batch(batch_input_data, real_labels)
-
-                                # Print losses and accuracies
+                                # ログ出力
                                 print(f'Epoch {epoch + 1}, Batch {batch_start_index}, D loss: {d_loss}, D accuracy: {d_accuracy}, G loss: {g_loss}')
-                                
-                                # Append losses and accuracies for tracking
+
                                 d_loss_list.append(d_loss)
                                 d_accuracy_list.append(d_accuracy)
                                 g_loss_list.append(g_loss)
 
-                            # Calculate and store average losses per epoch
+                                # 生成画像を途中で保存
+                                save_generated_bin_data(batch_start_index + epoch*num_samples, generated_images[0], duringtraining_directory, time_per_step)
+
+                            # エポックごとの平均ロス
                             epoch_d_loss = np.mean(d_loss_list)
                             epoch_d_accuracy = np.mean(d_accuracy_list)
                             epoch_g_loss = np.mean(g_loss_list)
-                            
+
                             d_losses.append(epoch_d_loss)
                             d_accuracies.append(epoch_d_accuracy)
                             g_losses.append(epoch_g_loss)
 
                             print(f'Epoch {epoch + 1}, D loss: {epoch_d_loss}, D accuracy: {epoch_d_accuracy}, G loss: {epoch_g_loss}')
 
-                            # Save models after each epoch
-                            #generator.save('generator.h5', include_optimizer=False)
+                            # モデル保存
+                            generator.save('generator.h5', include_optimizer=False)
+                            discriminator.save('discriminator.h5', include_optimizer=False)
 
-                            # Save loss and accuracy data
+                            # lossとaccuracy保存
                             with open('loss_data.txt', 'w') as f:
                                 for i in range(len(d_losses)):
                                     f.write(f"{i+1}, {d_losses[i]}, {d_accuracies[i]}, {g_losses[i]}\n")
-                        # Save models after each epoch
-                        generator.save('generator.h5', include_optimizer=False) 
-                        # lossのグラフを生成し、保存
-                        plt.figure(figsize=(10, 5))
-                        plt.semilogy(range(1, epochs+1), d_losses, label='Discriminator Loss')
-                        plt.semilogy(range(1, epochs+1), d_accuracies, label='Discriminator Accuracy')
-                        plt.semilogy(range(1, epochs+1), g_losses, label='Generator Loss')
-                        plt.xlabel('Epoch')
-                        plt.ylabel('Loss/Accuracy')
-                        plt.xticks(range(0, epochs+1, 10))
-                        plt.legend()
-                        plt.savefig('loss_accuracy_graph.png')
-                        plt.close()
 
-                        time_step_str_coarse = f"{time_coarse_finish:.4f}"  
-                        OUTPUT_DB[:,:,:], ave_0 = generator_output(case_coarse,time_step_str_coarse,alpha,beta,_,output_directory,U,time_coarse_finish)
-                        time_coarse_finish
-                        print("ave_0 = ",ave_0)
+                            # lossグラフ保存
+                            plt.figure(figsize=(10,5))
+                            plt.plot(range(1, len(d_losses)+1), d_losses, label='Discriminator loss')
+                            plt.plot(range(1, len(d_losses)+1), d_accuracies, label='Discrimiantor accuracy')
+                            plt.plot(range(1, len(d_losses)+1), g_losses, label='Generator loss')
+                            plt.yscale('log')
+                            plt.xlabel('Epoch')
+                            plt.ylabel('Loss/Accuracy')
+                            plt.legend()
+                            plt.savefig('loss_accuracy_graph.png')
+                            plt.close()
+                       
+                    time_step_str_coarse = f"{time_coarse_finish:.4f}" 
+                    OUTPUT_DB[:,:,:], ave_0, ave_1  = generator_output(case_coarse,time_step_str_coarse,alpha,beta,_,output_directory,U,time_coarse_finish,ny,nu,zero_hight_coarse,time_steps_coarse, input_data_directory, coarse_original_data_directory,input_data_directory_top,coarse_original_data_directory_top)
+                    print("ave_0 = ",ave_0)
+                    print("ave_1 = ",ave_1)
                         
                 # 4. Caluculate Shear Stress
                 if not _ % a_posteriori_steps == 0:
-                    custom_objects = {'PeriodicPadding2D': PeriodicPadding2D}
-                    generator = load_model('generator.h5', custom_objects=custom_objects, compile=False)
+                    #custom_objects = {'PeriodicPadding2D': PeriodicPadding2D}
+                    #generator = load_model('generator.h5', custom_objects=custom_objects, compile=False)
 
                     # 必要なオプティマイザと損失関数を指定してモデルをコンパイル
-                    generator.compile(optimizer='adam', loss='binary_crossentropy')
-                    case = _ * time_step_coarse 
+                    #generator.compile(optimizer='adam', loss='binary_crossentropy')
+                    case = _ * time_step_coarse
+                    time_step_str_coarse = f"{case:.4f}"   # Convert time step to string   
                     case_coarse = "LES_co" 
                     batch_input_data_list_bottom = []
                     batch_input_data_list_top = [] 
-                    time_step_str_coarse = f"{case:.4f}"   # Convert time step to string  
+                    ##### save stepでしか保存していないから，その間のデータは存在しない．　そのためその前のsave stepのデータから100回のデータから500個の平均の値を使う
+                    LAST_case_number = _ //save_steps
+                    LAST_case = LAST_case_number *  save_steps
+                    print('LAST_case', LAST_case)
+                    time_step_str_coarse_LAST = f"{LAST_case:.4f}" 
+                    time_coarse_start = (LAST_case - feed_steps) * time_step_coarse 
+                    time_coarse_finish = (LAST_case) * time_step_coarse
+                    feed_time= time_step_coarse  * save_steps
+                    time_steps_coarse = np.arange(time_coarse_start, time_coarse_finish, feed_time)  
                     # Get velocity data for the coarse case
                     velocities_coarse = get_velocities(case_coarse, time_step_str_coarse)
-                    OUTPUT_DB[:,:,:], ave_0 = generator_output(case_coarse,time_step_str_coarse,alpha,beta,_,output_directory,U,case)
+                    OUTPUT_DB[:,:,:], ave_0, ave_1  = generator_output(case_coarse,time_step_str_coarse,alpha,beta,_,output_directory,U,case,ny,nu,zero_hight_coarse,time_steps_coarse, input_data_directory, coarse_original_data_directory,input_data_directory_top,coarse_original_data_directory_top)
                     print("ave_0 = ",ave_0)
                     
             else:
-                custom_objects = {'PeriodicPadding2D': PeriodicPadding2D}
-                generator= load_model('generator.h5', custom_objects=custom_objects, compile=False)
+                #custom_objects = {'PeriodicPadding2D': PeriodicPadding2D}
+                #generator= load_model('generator.h5', custom_objects=custom_objects, compile=False)
 
                 # 必要なオプティマイザと損失関数を指定してモデルをコンパイル
-                generator.compile(optimizer='adam', loss='binary_crossentropy')
-                case = _ * time_step_coarse 
+                #generator.compile(optimizer='adam', loss='binary_crossentropy')
+                case = _ * time_step_coarse
+                time_step_str_coarse = f"{case:.4f}"   # Convert time step to string 
                 case_coarse = "LES_co" 
                 batch_input_data_list_bottom = []
                 batch_input_data_list_top = [] 
-                time_step_str_coarse = f"{case:.4f}"   # Convert time step to string
-                
+                ##### save stepでしか保存していないから，その間のデータは存在しない．　そのためその前のsave stepのデータから100回のデータから500個の平均の値を使う
+                LAST_case_number = _ //save_steps
+                LAST_case = LAST_case_number *  save_steps
+                time_step_str_coarse_LAST = f"{LAST_case:.4f}"  
                 # Get velocity data for the coarse case
                 velocities_coarse = get_velocities(case_coarse, time_step_str_coarse)
-                OUTPUT_DB[:,:,:], ave_0 = generator_output(case_coarse,time_step_str_coarse,alpha,beta,_,output_directory,U,case)
+                OUTPUT_DB[:,:,:], ave_0, ave_1  = generator_output(case_coarse,time_step_str_coarse,alpha,beta,_,output_directory,U,case,ny,nu,zero_hight_coarse,time_steps_coarse, input_data_directory, coarse_original_data_directory,input_data_directory_top,coarse_original_data_directory_top)
                 print("ave_0 = ",ave_0)
                 print('use the generator and update the wall shear stress at', case)
 
@@ -880,7 +1062,7 @@ def main(nu, case_dir, num_steps, save_steps, eed_loc, feed_loc_2, input_loc, fe
         # Calculate body forces
         forces = calculate_body_forces(float(current_time), velocities, locations, iy_feed, iy_feed_2, U_0, U_1, time_step_coarse, ny, delta)
 
-        if _ >= 10000:
+        if _ >= 50000:
             write_forces_to_case(forces, case_dir, current_time)
         
         runner = BasicRunner(argv=["pimpleFoamfeedback", "-case", case_dir], silent=False)
@@ -900,20 +1082,20 @@ def main(nu, case_dir, num_steps, save_steps, eed_loc, feed_loc_2, input_loc, fe
 
 if __name__ == "__main__":
     case_dir = "LES_co/"
-    num_steps = 2000
-    save_steps = 1
-    feed_steps = 500
-    limit_steps = 2000
-    a_posteriori_steps = 500
-    time_step_coarse = 0.0004
-    nu= 0.00418
-    zero_hight_coarse = 0.00399141
-    first_hight_coarse = 0.0129296
-    feed_loc = 1.0 / 300
-    feed_loc_2 = 599.0 /300
-    input_loc = 50 / 300
+    num_steps = 50000
+    save_steps = 100
+    feed_steps = 50000
+    limit_steps = 79999
+    a_posteriori_steps = 5000
+    time_step_coarse = 0.0008
+    nu= 0.009
+    zero_hight_coarse = 0.00756331
+    first_hight_coarse = 0.0271056
+    feed_loc = 1.0 / 150
+    feed_loc_2 = 299.0 /150
+    input_loc = 50 / 150
     alpha = 1
-    beta = 0.1
+    beta = 1
     ny = 16
-    delta = 0.5
+    delta = 1
     main(nu, case_dir, num_steps, save_steps, feed_loc, feed_loc_2, input_loc, feed_steps, first_hight_coarse, zero_hight_coarse, limit_steps, time_step_coarse, a_posteriori_steps, alpha, beta, delta, ny)
